@@ -2,7 +2,6 @@ from panda3d.core import (
     WindowProperties,
     Vec3,
     CardMaker,
-    NodePath,
     Texture,
     TextNode,
     Filename,
@@ -47,9 +46,9 @@ FACE_DEFS = [
 
 
 class LanManager:
-    DISCOVERY_PORT = 25565
-    GAME_PORT = 25566
-    DISCOVERY_MAGIC = "CLASSIRENDERMC_LAN"
+    DISCOVERY_PORT = 40404
+    GAME_PORT = 40405
+    DISCOVERY_MAGIC = "CLASSIRENDERMC_LAN_V1"
 
     def __init__(self, game):
         self.game = game
@@ -71,8 +70,34 @@ class LanManager:
     def get_local_ip(self):
         return self.game.get_local_ip()
 
+    def make_socket(self):
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+
+        try:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+        except Exception:
+            pass
+
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        sock.settimeout(0.25)
+
+        return sock
+
+    def get_broadcast_targets(self):
+        local_ip = self.get_local_ip()
+        targets = [("255.255.255.255", self.DISCOVERY_PORT)]
+
+        parts = local_ip.split(".")
+
+        if len(parts) == 4:
+            targets.append((f"{parts[0]}.{parts[1]}.{parts[2]}.255", self.DISCOVERY_PORT))
+
+        return targets
+
     def start_host(self):
         self.stop()
+
         self.running = True
         self.hosting = True
         self.client = False
@@ -80,21 +105,22 @@ class LanManager:
         self.game_port = self.GAME_PORT
         self.peers = {}
 
-        self.game_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.game_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.game_socket = self.make_socket()
         self.game_socket.bind(("0.0.0.0", self.game_port))
 
         threading.Thread(target=self.game_receive_loop, daemon=True).start()
 
+        self.game.show_message(f"LAN opened on {self.host_ip}:{self.game_port}")
+
     def start_client(self, ip, port):
         self.stop()
+
         self.running = True
         self.hosting = False
         self.client = True
         self.server_addr = (ip, int(port))
 
-        self.game_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.game_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.game_socket = self.make_socket()
         self.game_socket.bind(("0.0.0.0", 0))
 
         threading.Thread(target=self.game_receive_loop, daemon=True).start()
@@ -103,6 +129,8 @@ class LanManager:
             "type": "join",
             "username": self.game.username
         })
+
+        self.game.show_message(f"Joining {ip}:{port}")
 
     def stop(self):
         self.running = False
@@ -121,11 +149,11 @@ class LanManager:
 
     def scan_worlds(self):
         self.available_worlds = {}
+        scan_socket = None
 
         try:
-            scan_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            scan_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-            scan_socket.settimeout(0.2)
+            scan_socket = self.make_socket()
+            scan_socket.bind(("0.0.0.0", 0))
 
             packet = {
                 "magic": self.DISCOVERY_MAGIC,
@@ -133,45 +161,66 @@ class LanManager:
                 "username": self.game.username
             }
 
-            scan_socket.sendto(
-                json.dumps(packet).encode("utf-8"),
-                ("255.255.255.255", self.DISCOVERY_PORT)
-            )
+            data = json.dumps(packet).encode("utf-8")
+
+            for target in self.get_broadcast_targets():
+                try:
+                    scan_socket.sendto(data, target)
+                except Exception:
+                    pass
+
+            if self.hosting:
+                key = f"{self.get_local_ip()}:{self.game_port}"
+                self.available_worlds[key] = {
+                    "world_name": "ClassiRenderMC World",
+                    "host_username": self.game.username,
+                    "ip": self.get_local_ip(),
+                    "port": self.game_port
+                }
 
             start = time.time()
 
-            while time.time() - start < 1.0:
+            while time.time() - start < 1.5:
                 try:
                     data, addr = scan_socket.recvfrom(4096)
                     msg = json.loads(data.decode("utf-8"))
 
-                    if msg.get("magic") == self.DISCOVERY_MAGIC and msg.get("type") == "announce":
-                        ip = msg.get("ip", addr[0])
-                        port = int(msg.get("port", self.GAME_PORT))
+                    if msg.get("magic") != self.DISCOVERY_MAGIC:
+                        continue
 
-                        self.available_worlds[f"{ip}:{port}"] = {
-                            "world_name": msg.get("world_name", "ClassiRenderMC World"),
-                            "host_username": msg.get("host_username", "Player"),
-                            "ip": ip,
-                            "port": port
-                        }
+                    if msg.get("type") != "announce":
+                        continue
+
+                    ip = msg.get("ip", addr[0])
+                    port = int(msg.get("port", self.GAME_PORT))
+
+                    self.available_worlds[f"{ip}:{port}"] = {
+                        "world_name": msg.get("world_name", "ClassiRenderMC World"),
+                        "host_username": msg.get("host_username", "Player"),
+                        "ip": ip,
+                        "port": port
+                    }
                 except socket.timeout:
                     pass
                 except Exception:
                     pass
 
-            scan_socket.close()
-        except Exception:
-            pass
+        except Exception as e:
+            print("LAN scan error:", e)
+
+        if scan_socket:
+            try:
+                scan_socket.close()
+            except Exception:
+                pass
 
     def discovery_listener(self):
         try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-            sock.bind(("0.0.0.0", self.DISCOVERY_PORT))
-            self.discovery_socket = sock
-        except Exception:
+            self.discovery_socket = self.make_socket()
+            self.discovery_socket.bind(("0.0.0.0", self.DISCOVERY_PORT))
+            print(f"LAN discovery listening on UDP {self.DISCOVERY_PORT}")
+        except Exception as e:
+            print("LAN discovery failed:", e)
             return
 
         while self.discovery_listener_running:
@@ -195,6 +244,8 @@ class LanManager:
                         "ip": ip,
                         "port": port
                     }
+            except socket.timeout:
+                pass
             except Exception:
                 pass
 
@@ -211,14 +262,17 @@ class LanManager:
             "port": self.game_port
         }
 
+        data = json.dumps(packet).encode("utf-8")
+
         try:
             if addr:
-                self.discovery_socket.sendto(json.dumps(packet).encode("utf-8"), addr)
+                self.discovery_socket.sendto(data, addr)
             else:
-                self.discovery_socket.sendto(
-                    json.dumps(packet).encode("utf-8"),
-                    ("255.255.255.255", self.DISCOVERY_PORT)
-                )
+                for target in self.get_broadcast_targets():
+                    try:
+                        self.discovery_socket.sendto(data, target)
+                    except Exception:
+                        pass
         except Exception:
             pass
 
@@ -245,6 +299,8 @@ class LanManager:
                 data, addr = self.game_socket.recvfrom(65535)
                 packet = json.loads(data.decode("utf-8"))
                 self.handle_game_packet(packet, addr)
+            except socket.timeout:
+                pass
             except Exception:
                 pass
 
@@ -261,7 +317,9 @@ class LanManager:
                 "blocks": [[x, y, z, block] for (x, y, z), block in self.game.blocks.items()]
             })
 
-        if packet_type == "welcome" and self.client:
+            self.game.show_message(f"{username} joined LAN")
+
+        elif packet_type == "welcome" and self.client:
             blocks = packet.get("blocks", None)
 
             if blocks:
@@ -276,7 +334,7 @@ class LanManager:
 
             self.game.show_message("Joined LAN world")
 
-        if packet_type == "pos":
+        elif packet_type == "pos":
             username = packet.get("username", "Player")
 
             if username == self.game.username:
@@ -296,7 +354,7 @@ class LanManager:
                     if peer_addr != addr:
                         self.send_packet(peer_addr, packet)
 
-        if packet_type == "setblock":
+        elif packet_type == "setblock":
             x = int(packet.get("x"))
             y = int(packet.get("y"))
             z = int(packet.get("z"))
@@ -594,6 +652,7 @@ class ClassiRenderMC(ShowBase):
     def show_message(self, text):
         self.messageText.setText(text)
         self.messageTimer = 3.0
+        print(text)
 
     def toggle_fps(self):
         self.showFps = not self.showFps
@@ -719,7 +778,6 @@ class ClassiRenderMC(ShowBase):
 
     def open_to_lan(self):
         self.lan.start_host()
-        self.show_message(f"Opened to LAN on {self.get_local_ip()}")
 
     def close_lan(self):
         self.lan.stop()
@@ -764,7 +822,7 @@ class ClassiRenderMC(ShowBase):
                 name = world.get("world_name", "ClassiRenderMC World")
                 host = world.get("host_username", "Player")
                 ip = world.get("ip", "127.0.0.1")
-                port = world.get("port", 25566)
+                port = world.get("port", 40405)
 
                 DirectButton(
                     parent=self.lanWorldsFrame,
@@ -797,7 +855,6 @@ class ClassiRenderMC(ShowBase):
     def join_lan_world(self, ip, port):
         self.close_lan_worlds_menu()
         self.lan.start_client(ip, port)
-        self.show_message(f"Joined LAN world at {ip}:{port}")
 
     def get_placement_block_type(self, z):
         if z > self.worldTopZ:
