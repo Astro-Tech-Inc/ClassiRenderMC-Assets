@@ -1542,7 +1542,6 @@ class ClassiRenderMC(ShowBase):
         x, y, z = empty
 
         if self.block_overlaps_player(x, y, z):
-            self.show_message("You cannot place blocks inside yourself.")
             return
 
         block_type = self.get_placement_block_type(z)
