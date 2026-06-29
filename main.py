@@ -1,3 +1,5 @@
+# Start of file
+
 from panda3d.core import (
     WindowProperties,
     Vec3,
