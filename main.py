@@ -165,7 +165,7 @@ class LanManager:
         self.client = True
         self.server_addr = (ip, int(port))
 
-        self.game_socket = self.make_socket()
+        self.game_socket = self.make_socket() 
         self.game_socket.bind(("0.0.0.0", 0))
 
         threading.Thread(target=self.game_receive_loop, daemon=True).start()
@@ -426,7 +426,7 @@ class LanManager:
             "to": None,
             "private": False
         }
-
+        self.game.add_chat_line("33")
         self.game.receive_chat_message(username, message, private=False)
 
         for peer_addr in list(self.peers.keys()):
@@ -1096,7 +1096,10 @@ class ClassiRenderMC(ShowBase):
 
             self.lan.send_chat(private_message, target_username)
             return
-
+        else:
+            if self.lan.client:
+                #should not be here
+                self.receive_chat_message(self.username,message,False)
         self.lan.send_chat(message)
 
     def toggle_fps(self):
