@@ -1,4 +1,4 @@
-# Start of file
+
 
 from panda3d.core import (
     WindowProperties,
@@ -1658,4 +1658,3 @@ if __name__ == "__main__":
 
 
 
-# End Of File
