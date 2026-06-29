@@ -1,6 +1,3 @@
-# start of file
-
-
 from panda3d.core import (
     WindowProperties,
     Vec3,
@@ -8,6 +5,7 @@ from panda3d.core import (
     Texture,
     TextNode,
     Filename,
+    TransparencyAttrib,
     loadPrcFileData
 )
 from direct.showbase.ShowBase import ShowBase
@@ -618,6 +616,9 @@ class ClassiRenderMC(ShowBase):
         self.remote_player_nodes = {}
         self.remote_player_names = {}
 
+        self.hoveredBlock = None
+        self.hoverOverlay = None
+
         self.menuOpen = False
         self.menuFrame = None
         self.lanWorldsFrame = None
@@ -870,6 +871,79 @@ class ClassiRenderMC(ShowBase):
             if pos in self.blocks:
                 bx, by, bz = pos
                 self.create_block_node(bx, by, bz, self.blocks[pos])
+
+    def create_hover_overlay(self):
+        overlay = self.render.attachNewNode("hover-overlay")
+        overlay.setTransparency(TransparencyAttrib.M_alpha)
+        overlay.setColor(1, 1, 1, 0.28)
+        overlay.setBin("fixed", 40)
+        overlay.setDepthWrite(False)
+        overlay.hide()
+
+        for direction, h, p, r in FACE_DEFS:
+            cm = CardMaker("hover-face")
+            cm.setFrame(-0.505, 0.505, -0.505, 0.505)
+
+            face = overlay.attachNewNode(cm.generate())
+
+            dx, dy, dz = direction
+            face.setPos(0.5 + dx * 0.505, 0.5 + dy * 0.505, 0.5 + dz * 0.505)
+            face.setHpr(h, p, r)
+            face.setTwoSided(True)
+            face.setTransparency(TransparencyAttrib.M_alpha)
+            face.setColor(1, 1, 1, 0.28)
+            face.setBin("fixed", 40)
+            face.setDepthWrite(False)
+
+        self.hoverOverlay = overlay
+
+    def update_hover_overlay(self):
+        if self.menuOpen or self.chatOpen:
+            if self.hoverOverlay:
+                self.hoverOverlay.hide()
+
+            return
+
+        hit, empty = self.raycast()
+
+        if hit is None:
+            self.hoveredBlock = None
+
+            if self.hoverOverlay:
+                self.hoverOverlay.hide()
+
+            return
+
+        if self.hoverOverlay is None:
+            self.create_hover_overlay()
+
+        if hit != self.hoveredBlock:
+            self.hoveredBlock = hit
+            x, y, z = hit
+            self.hoverOverlay.setPos(x, y, z)
+
+        self.hoverOverlay.show()
+
+    def block_overlaps_player(self, x, y, z):
+        player_min_x = self.playerPos.x - self.playerRadius
+        player_max_x = self.playerPos.x + self.playerRadius
+        player_min_y = self.playerPos.y - self.playerRadius
+        player_max_y = self.playerPos.y + self.playerRadius
+        player_min_z = self.playerPos.z
+        player_max_z = self.playerPos.z + self.playerHeight
+
+        block_min_x = x
+        block_max_x = x + 1
+        block_min_y = y
+        block_max_y = y + 1
+        block_min_z = z
+        block_max_z = z + 1
+
+        overlaps_x = player_min_x < block_max_x and player_max_x > block_min_x
+        overlaps_y = player_min_y < block_max_y and player_max_y > block_min_y
+        overlaps_z = player_min_z < block_max_z and player_max_z > block_min_z
+
+        return overlaps_x and overlaps_y and overlaps_z
 
     def create_ui(self):
         self.crosshair = OnscreenText(
@@ -1466,6 +1540,11 @@ class ClassiRenderMC(ShowBase):
             return
 
         x, y, z = empty
+
+        if self.block_overlaps_player(x, y, z):
+            self.show_message("You cannot place blocks inside yourself.")
+            return
+
         block_type = self.get_placement_block_type(z)
 
         self.blocks[empty] = block_type
@@ -1623,6 +1702,8 @@ class ClassiRenderMC(ShowBase):
 
         self.camera.setPos(self.playerPos.x, self.playerPos.y, self.playerPos.z + self.playerHeight)
 
+        self.update_hover_overlay()
+
         if self.messageTimer > 0:
             self.messageTimer -= dt
 
@@ -1656,6 +1737,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-
